@@ -1,0 +1,181 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library('dplyr')
+library(tm)
+```
+
+#import dataset
+```{r}
+setwd("E:/Documents/Kuliah/UPN/Semester 5/Praktikum Data Science/Project Akhir")
+tweets <- read.csv("tweets.csv")
+
+corpus <- Corpus(VectorSource(tweets$tweet))
+inspect(corpus[1:10])
+```
+
+#Pre-Processing
+
+##Emoticon sentimen
+```{r}
+library('tidyverse')
+library(lexicon)
+data(emojis_sentiment)
+
+count_matches <- function(string, matchto, description, sentiment = NA) {
+  
+  vec <- str_count(string, matchto)
+  matches <- which(vec != 0)
+  
+  descr <- NA
+  cnt <- NA
+  
+  if (length(matches) != 0) {
+    
+    descr <- description[matches]
+    cnt <- vec[matches]
+    
+  } 
+  
+  df <- data.frame(text = string, description = descr, count = cnt, sentiment = NA)
+  
+  if (!is.na(sentiment) && length(sentiment[matches]) != 0) {
+    
+    df$sentiment <- sentiment[matches]
+    
+  }
+  
+  return(df)
+  
+}
+
+emojis_matching <- function(texts, matchto, description, sentiment = NA) {
+  
+  texts %>% 
+    map_df(count_matches, 
+           matchto = matchto, 
+           description = description, 
+           sentiment = sentiment)
+  
+}
+
+sentiments <- function(text)
+{
+  sentimen <- emojis_matching(text, emojis_sentiment$byte, emojis_sentiment$name, emojis_sentiment$sentiment) %>%
+  mutate(sentiment = count * as.numeric(sentiment)) %>%
+  summarise(sentiment_score = sum(sentiment, na.rm = TRUE))  
+  
+  return(sentimen)
+}
+```
+
+
+##Case FOlding
+```{r}
+corpus <- tm_map(corpus, content_transformer(tolower))  
+```
+
+##Cleaning tweets
+```{r}
+library(stringr)
+library(textclean)
+
+cleanPosts <- function(text) { 
+  clean_texts <- text %>%
+    gsub("<.*>", "", .) %>% #remove emot
+    gsub("&amp;", "", .) %>% # remove &
+    gsub("(RT|via)((?:\\b\\W*@\\w+)+)", "", .) %>% # remove retweet entities
+    gsub("@\\w+", "", .) %>% # remove at people
+    gsub("[[:punct:]]", "", .) %>% # remove punctuation
+    gsub("[[:digit:]]", "", .) %>% # remove digits
+    gsub("(http|https)\\w+", "", .) %>% # remove html links
+    gsub("[ |\t]+", " ", .) %>% # remove unnecessary spaces
+    gsub("^\\s+|\\s+$", "", .) %>%  # remove unnecessary spaces
+    gsub("\n", " ", .) %>% # remove tab, new line
+    gsub("\\b(.)\\b", " ", .) %>% # remove single char
+  return(clean_texts)
+}
+corpus$clean <- tm_map(corpus, cleanPosts)
+
+corpus$clean <- tm_map(corpus$clean, replace_word_elongation, impart.meaning = TRUE)
+
+sentimen <- iconv( unlist(sapply(corpus$clean,'[')), from = "latin1", to = "ASCII", sub="byte")
+sentimen <- paste(unlist(sapply(sentimen, sentiments)))
+
+# remove_emoji <- function(text) iconv( text, from = "latin1", to = "ASCII", sub="")
+# corpus$clean <- tm_map(corpus$clean, remove_emoji)
+```
+
+
+```{r}
+inspect(corpus$clean[1:10])
+```
+
+
+##Filtering
+```{r}
+myStopwords <- readLines("stopwords.csv")
+
+corpus$clean <- tm_map(corpus$clean, removeWords, myStopwords) 
+
+corpus$clean <- tm_map(corpus$clean, stripWhitespace) 
+inspect(corpus$clean[1:5])
+```
+
+```{r}
+library(parallel)
+library(tau)
+```
+
+
+##Normalization
+```{r}
+slangs <- read.csv("colloquial-indonesian-lexicon.csv") %>% select(slang, formal)
+
+norm <-function(text,mc.cores=1)
+{
+  slangword <- function(tweets) replace_internet_slang(tweets, slang = paste0("\\b", slangs$slang, "\\b"), replacement = slangs$formal, ignore.case = TRUE)
+  
+  x<-mclapply(X=text,FUN=slangword,mc.cores=mc.cores)
+  return(unlist(x))
+}
+
+corpus$norm <- tm_map(corpus$clean, norm)
+inspect(corpus$norm[1:10])
+```
+
+
+
+##Stemming
+```{r}
+library(katadasaR)
+
+stem_text<-function(text,mc.cores=1)
+{
+  stem_string<-function(str)
+  {
+    str<-tokenize(str)
+    str<-sapply(str,katadasaR)
+    str<-paste(str,collapse='')
+    return(str)
+  }
+  x<-mclapply(X=text,FUN=stem_string,mc.cores=mc.cores)
+  return(unlist(x))
+}
+corpus$stem <- tm_map(corpus$norm,stem_text)
+inspect(corpus$stem[1:10])
+```
+
+#Save Text Processing
+```{r}
+tweets$tweet_clean <- unlist(sapply(corpus$stem,'['))
+tweets$emoticon_sentimen_score <- as.numeric(sentimen)
+```
+
+```{r}
+write.csv(tweets,file="text_processing.csv", row.names = FALSE)
+```
+

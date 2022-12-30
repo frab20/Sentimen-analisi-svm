@@ -1,0 +1,214 @@
+---
+title: "sentimen"
+output: html_document
+date: "2022-11-17"
+---
+
+```{r}
+setwd("E:/Documents/Kuliah/Semester 5/Prak DS/Project Akhir")
+data_bersih <- read.csv('text_processing.csv', na.strings = c(""))
+lexicon <- read.csv('ind_lexicon.csv')
+```
+
+
+##Drop duplicate data dan data NA 
+```{r}
+library(tidyr)
+library(dplyr)
+
+data_bersih <- distinct(data_bersih, tweet_clean, .keep_all = TRUE)
+
+data_bersih <- drop_na(data_bersih)
+```
+
+
+#Labeling
+```{r}
+library(stringr)
+
+score.sentiment = function(kalimat, word, sentimen){
+  kalimat <- gsub('[[:punct:]]', '', kalimat)
+  kalimat <- gsub('[[:cntrl:]]', '', kalimat)
+  kalimat <- gsub('\\d+', '', kalimat)
+  kalimat <- tolower(kalimat)
+  list.kata <- str_split(kalimat, '\\s+')
+  kata2 <- unlist(list.kata)
+  matches <- match(kata2, word)
+  matches <- matches[!is.na(matches)]
+  x <- as.numeric(sentimen[matches]) 
+  i <- length(matches)
+  score = sum(x)/i
+  return(as.numeric(score))
+}
+
+data_bersih$sentimen_score <- sapply(data_bersih$tweet_clean, score.sentiment, lexicon$word, lexicon$value)
+data_bersih$sentimen_score[is.na(data_bersih$sentimen_score)] = 0
+```
+
+
+#add factor label
+```{r}
+#without emot
+klasifikasi <- function(sentimen){
+  sentiment <- ifelse(sentimen < 0, "Negatif" , ifelse(sentimen >0 , "Positif" , "Netral"))
+  return(sentiment)  
+} 
+
+data_bersih$klasifikasi <- sapply(data_bersih$sentimen_score, klasifikasi)
+
+#with emot
+data_bersih$klasifikasi_emot <- ifelse( (data_bersih$sentimen_score * 0.6 +  data_bersih$emoticon_sentimen_score *0.4) < 0, "Negatif" , ifelse( (data_bersih$sentimen_score * 0.6 +  data_bersih$emoticon_sentimen_score *0.4) > 0 , "Positif" , "Netral"))
+```
+
+
+#SUBSET DATA TO GET A RANDOM SAMPLE
+```{r}
+library(RTextTools)
+
+#trainids <- seq(1, floor(nrow(data_bersih)*0.7))
+#testids <- seq(floor(nrow(data_bersih)*0.7)+1, nrow(data_bersih))
+
+#withou emot 
+training_data <- data_bersih[sample(1:885, size = 885 ,replace=FALSE),]
+training_data <- select(training_data,tweet = tweet_clean,klasifikasi = klasifikasi)
+training_data$tweet <- sapply(training_data$tweet, iconv, from = "latin1", to = "ASCII", sub="")
+
+#with emot
+training_data1 <- data_bersih[sample(1:885, size = 885 ,replace=FALSE),]
+training_data1 <- select(training_data1,tweet = tweet_clean,klasifikasi = klasifikasi_emot)
+```
+
+
+#pembobotan menggunakan tfidf
+```{r}
+library(tm)
+
+#without emot
+matrix <- create_matrix(training_data$tweet, weighting=weightTfIdf)
+
+container <- create_container(matrix, t(training_data$klasifikasi), trainSize=1:619, testSize=620:885, virgin=FALSE)
+
+
+#with emot
+matrix1 <- create_matrix(training_data1$tweet, weighting=weightTfIdf)
+
+container1 <- create_container(matrix1, t(training_data1$klasifikasi), trainSize=1:619, testSize=620:885, virgin=FALSE)
+```
+
+#Modeling
+```{r}
+#without emot
+model <- train_model(container, "SVM", kernel="linear", cost=1)
+
+#with emot
+model1 <- train_model(container1, "SVM", kernel="linear", cost=1)
+```
+
+
+#Prediksi
+```{r}
+#without emot
+#predMatrix <- create_matrix(data_bersih$tweet_clean, originalMatrix=matrix)
+
+#predSize = length(data_bersih$tweet_clean);
+#predictionContainer <- create_container(predMatrix, labels=rep(0,predSize), testSize=1:predSize, virgin=FALSE)
+
+results <- classify_model(container, model)
+results
+
+
+#with emot
+#predMatrix1 <- create_matrix(data_bersih$tweet_clean, originalMatrix=matrix1)
+
+#predSize1 = length(data_bersih$tweet_clean);
+#predictionContainer1 <- create_container(predMatrix1, labels=rep(0,predSize1), testSize=1:predSize1, virgin=FALSE)
+
+results1 <- classify_model(container1, model1)
+results1
+```
+
+
+#Evaluation Matrik
+```{r}
+  #without emot
+  eval <- create_scoreSummary(container, results)
+  eval
+
+  #with emot
+  eval1 <- create_scoreSummary(container1, results1)
+  eval1
+```
+#Akurasi
+```{r}
+  #without emot
+  recall_accuracy(eval$BEST_PROB, eval$SVM_LABEL)
+
+  #with emot
+  recall_accuracy(eval1$BEST_PROB, eval1$SVM_LABEL)
+```
+
+
+```{r}
+library(shiny)
+library(wordcloud)
+
+# UI Web
+ui <- fluidPage(
+  title = "Analisa Sentimen",
+  headerPanel("Analisa Sentimen Tentang SNBT 2023"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(inputId = "parameter",
+                  label = "Parameter",
+                  choices = c("without emoticon","with emoticon"),
+                  selected = "03"),
+  ),
+    mainPanel(
+      tabsetPanel(type = "tabs",
+                  tabPanel("Scatterplot", plotOutput("scatterplot")), #tab berupa scatterplot/grafik
+                  tabPanel("Data Twitter", DT::dataTableOutput('tbl')), #tab berupa data clening twitter
+      )
+    )
+  )
+)
+
+```
+
+
+```{r}
+server <- function(input, output, session) {
+  
+  barInput <- reactive({
+    if(input$parameter == "without emoticon"){
+      label <- results$SVM_LABEL     
+    }else{
+      label <- results1$SVM_LABEL
+    }  
+    table(label)
+  })  
+  
+  outInput <- reactive({
+    if(input$parameter == "without emoticon"){
+      label <- results$SVM_LABEL     
+    }else{
+      label <- results1$SVM_LABEL
+    }  
+    cbind(text = data_bersih$tweet, sentimen = label)
+  })
+  
+  #Barplot
+  output$scatterplot <- renderPlot({
+    barplot(barInput(), xlab = "Sentimen", col=rainbow(10),ylab='Jumlah Sentimen',main='Analisis Sentimen SNBT 2023')  
+  }, height=400)
+  
+  # Output Data
+  output$tbl = DT::renderDataTable({
+    DT::datatable(outInput(), options = list(lengthChange = FALSE)) 
+  })
+  
+}
+
+shinyApp(ui = ui, server = server) 
+```
+
+
